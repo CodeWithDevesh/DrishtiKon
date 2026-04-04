@@ -50,13 +50,16 @@ class FaceModelNode:
         self.speech = speech
 
         print("[Vision] Loading YOLOv8 Nano...")
-        self._yolo_model = YOLO("yolov8n.pt")
+        self._yolo_model = YOLO("yolov8n_ncnn_model")
         self._known_face_encodings: list = []
         self._known_face_names: list = []
 
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._is_recognizing = False
         self._trackers: dict[int, PersonTracker] = {}
+
+        self._frame_count = 0
+        self._process_every_n_frames = 3
 
         # Load known faces on boot
         self._load_known_faces()
@@ -245,6 +248,10 @@ class FaceModelNode:
                 tracker.last_event_time = current_time
 
     def on_raw_frame(self, event: RawFrameEvent) -> None:
+        self._frame_count += 1
+        if self._frame_count % self._process_every_n_frames != 0:
+            return
+
         frame = event.frame
         frame_width = frame.shape[1]
         current_time = time.time()
@@ -318,10 +325,9 @@ class FaceModelNode:
         )
 
 
-
 # Utility function to easily boot this specific module from main.py
 def build_default_face_node() -> FaceModelNode:
     cfg = FaceRecognitionConfig()
     speech = SpeechClient(base_url=cfg.tts_router_url)
-    
+
     return FaceModelNode(cfg, speech)
