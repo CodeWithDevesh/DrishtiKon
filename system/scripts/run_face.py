@@ -3,6 +3,8 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from src.services.streamer import start_http_streamer
+import threading
 
 # Ensure project root is on sys.path so `import src...` works.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,13 +35,14 @@ def main():
         weapon_node = build_default_weapon_node()
         aggregator = AggregatorNode(expected_models=["FaceModel", "WeaponModel"])
 
+
+        print("[*] Starting React Native Video Stream on Port 8000...")
+        stream_thread = threading.Thread(target=start_http_streamer, args=(8000,), daemon=True)
+        stream_thread.start()
+
         print("[*] Starting TCP Video Server...")
         server = NetworkServerNode(port=9999)
         server.start()
-
-        print("[*] Launching Local Video Viewer in the background...")
-        time.sleep(2) # Give the server 2 seconds to open the port
-        viewer_process = subprocess.Popen([sys.executable, "viewer.py"])
 
         print("[*] Warming up Hardware Sensors...")
         # Update these pin tuples to match your physical Pi wiring: (TRIG, ECHO)
@@ -68,10 +71,6 @@ def main():
     finally:
         print("[-] Pipeline terminated.")
 
-        try:
-            if 'viewer_process' in locals():
-                viewer_process.terminate()
-        except: pass
 
         # Cleanup GPIO safely before shutting down
         try:
