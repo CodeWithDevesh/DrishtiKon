@@ -1,6 +1,6 @@
 absl-py==2.4.0
 annotated-types==0.7.0
-astunparse @ file:///home/conda/feedstock_root/build_artifacts/astunparse_1736248061654/work
+astunparse 
 blinker==1.9.0
 Bottleneck @ file:///opt/miniconda3/conda-bld/bottleneck_1761937849374/work
 brotlicffi @ file:///opt/miniconda3/conda-bld/brotlicffi_1764961161728/work
