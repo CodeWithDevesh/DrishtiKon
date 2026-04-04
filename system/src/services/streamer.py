@@ -1,6 +1,7 @@
 import cv2
 from flask import Flask, Response
 from src.core.event_bus import shared_event_bus
+import threading
 
 app = Flask(__name__)
 last_frame = None
