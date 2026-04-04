@@ -1,0 +1,2 @@
+"""Face recognition model plugin."""
+

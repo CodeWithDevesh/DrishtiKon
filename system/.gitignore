@@ -1,0 +1,8 @@
+.venv
+myenv
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+temp_speech.wav
+
