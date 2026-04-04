@@ -63,8 +63,8 @@ class UltrasonicNode(threading.Thread):
         while GPIO.input(sensor.echo) == 0:
             pulse_start = time.time()
             if pulse_start - timeout_start > 0.04: # 40ms timeout (~6 meters)
-                print(f"[HW-ERROR] {sensor.name} Sensor: ECHO never went HIGH. "
-                      f"(Check TRIG wiring, or sensor lost VCC/GND)")
+                # print(f"[HW-ERROR] {sensor.name} Sensor: ECHO never went HIGH. "
+                      # f"(Check TRIG wiring, or sensor lost VCC/GND)")
                 return -1.0
                 
         # 3. Wait for ECHO pin to go LOW
@@ -73,8 +73,8 @@ class UltrasonicNode(threading.Thread):
         while GPIO.input(sensor.echo) == 1:
             pulse_end = time.time()
             if pulse_end - timeout_start > 0.04:
-                print(f"[HW-ERROR] {sensor.name} Sensor: ECHO never went LOW. "
-                      f"(Check ECHO resistor divider, or ECHO wire is shorted to 3.3v)")
+                # print(f"[HW-ERROR] {sensor.name} Sensor: ECHO never went LOW. "
+                      # f"(Check ECHO resistor divider, or ECHO wire is shorted to 3.3v)")
                 return -1.0
 
         # 4. Math: Speed of sound is 34300 cm/s. 
