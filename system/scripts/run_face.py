@@ -39,7 +39,7 @@ def main():
         print("[*] Warming up Hardware Sensors...")
         # Update these pin tuples to match your physical Pi wiring: (TRIG, ECHO)
         ultrasonic = UltrasonicNode(
-            left_pins=(5, 6), center_pins=(13, 19), right_pins=(26, 21)
+            left_pins=(17, 18), center_pins=(27, 23), right_pins=(22, 24)
         )
         ultrasonic.start()
 
