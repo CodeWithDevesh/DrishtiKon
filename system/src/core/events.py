@@ -68,3 +68,9 @@ class ModelResultEvent:
 class RenderedFrameEvent:
     frame_id: int
     frame: np.ndarray
+
+@dataclass
+class UltrasonicEvent:
+    left_cm: float
+    center_cm: float
+    right_cm: float

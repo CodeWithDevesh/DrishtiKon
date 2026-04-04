@@ -19,37 +19,35 @@ from src.core.events import (
     ModelEvent,
     RawFrameEvent,
     ModelResultEvent,
-    RenderedFrameEvent,
+    SpeakRequest,
+    UltrasonicEvent,  # <-- NEW IMPORT
 )
 from src.core.event_bus import shared_event_bus
 from src.models.face_recognition.config import FaceRecognitionConfig
-from src.speech.client import SpeechClient
 
 
 @dataclass
 class PersonTracker:
-    """Tracks a unique body ID provided by YOLO."""
-
     yolo_id: int
     name: str = "Scanning..."
-    history: deque = field(default_factory=lambda: deque(maxlen=20))
+    history: deque = field(default_factory=lambda: deque(maxlen=30))
     last_announced_state: str = "none"
     last_event_time: float = 0.0
+    first_seen_time: float = field(default_factory=time.time)
     is_active: bool = True
     has_announced_entrance: bool = False
 
 
 class FaceModelNode:
     """
-    Subscribes to raw frames via the shared bus, runs YOLO + Face Recognition,
-    calculates intent, triggers voice events, and publishes drawing coordinates.
+    Subscribes to raw frames and ultrasonic data.
+    Uses Sensor Fusion (Camera + Sonar) to accurately determine intent.
     """
 
-    def __init__(self, cfg: FaceRecognitionConfig, speech: SpeechClient):
+    def __init__(self, cfg: FaceRecognitionConfig):
         self.cfg = cfg
-        self.speech = speech
 
-        print("[Vision] Loading YOLOv8 Nano...")
+        print("[Vision] Loading YOLOv8 Face Tracking with Sensor Fusion...")
         self._yolo_model = YOLO("yolov8n_ncnn_model")
         self._known_face_encodings: list = []
         self._known_face_names: list = []
@@ -61,12 +59,17 @@ class FaceModelNode:
         self._frame_count = 0
         self._process_every_n_frames = 3
 
-        # Load known faces on boot
+        # --- NEW: Ultrasonic State Cache ---
+        self._latest_sonar = {"left": 999.0, "center": 999.0, "right": 999.0}
+
         self._load_known_faces()
 
-        # Subscribe to internal vision bus and external voice bus
+        # Native Event Bus Subscriptions
         shared_event_bus.subscribe("raw_frame", self.on_raw_frame)
         shared_event_bus.subscribe("voice_command", self._on_voice_command)
+        shared_event_bus.subscribe(
+            "ultrasonic_data", self.on_ultrasonic_data
+        )  # <-- SENSOR FUSION
 
     def _load_known_faces(self) -> None:
         if not os.path.exists(self.cfg.face_db_path):
@@ -77,62 +80,69 @@ class FaceModelNode:
         for filename in os.listdir(self.cfg.face_db_path):
             if filename.lower().endswith((".png", ".jpg", ".jpeg")):
                 filepath = os.path.join(self.cfg.face_db_path, filename)
-                name = os.path.splitext(filename)[0]
+                name = os.path.splitext(filename)[0].replace("_", " ")
                 try:
                     image = face_recognition.load_image_file(filepath)
                     encodings = face_recognition.face_encodings(image)
                     if encodings:
                         self._known_face_encodings.append(encodings[0])
-                        self._known_face_names.append(name.replace("_", " "))
+                        self._known_face_names.append(name)
                         print(f"Loaded: {name}")
                 except Exception as e:
                     print(f"[Error] Failed to load {filename}: {e}")
 
+    # --- NEW: Catch Ultrasonic Updates ---
+    def on_ultrasonic_data(self, event: UltrasonicEvent):
+        """Silently caches the latest physical distances to cross-reference with vision."""
+
+        def clean(val):
+            return val if 0.0 < val < 400.0 else 999.0
+
+        self._latest_sonar["left"] = clean(event.left_cm)
+        self._latest_sonar["center"] = clean(event.center_cm)
+        self._latest_sonar["right"] = clean(event.right_cm)
+
     def _on_voice_command(self, transcript: str):
         if "who" in transcript or "people" in transcript or "describe" in transcript:
-            print("[Vision] Intercepted relevant voice command!")
             response = self.describe_scene()
-            self.speech.speak_text(response)
+            event = (
+                SpeechRouter.from_text(response, priority=EventPriority.NORMAL)
+                if "SpeechRouter" in globals()
+                else SpeakRequest(text=response)
+            )
+            shared_event_bus.publish("speak_request", event, run_async=True)
 
     def describe_scene(self) -> str:
         active_people = []
         for tracker in self._trackers.values():
-            if (
-                tracker.is_active
-                and tracker.has_announced_entrance
-                and tracker.name != "Scanning..."
-            ):
-                state = tracker.last_announced_state.replace("_", " ")
+            if tracker.is_active and tracker.name != "Scanning...":
+                state = tracker.last_announced_state
+                name = tracker.name
 
                 if state in ["stationary", "entered", "none"]:
                     action = "standing nearby"
                 elif state == "very_close":
                     action = "right in front of you"
                 elif state == "approaching":
-                    action = "approaching you"
+                    action = "coming towards you"
                 elif state == "leaving":
                     action = "walking away"
                 else:
                     action = state
 
                 display_name = (
-                    "someone I don't recognize"
-                    if tracker.name == "Unknown person"
-                    else tracker.name
+                    "Someone I don't recognize" if name == "Unknown person" else name
                 )
-                active_people.append(f"{display_name} {action}")
+                active_people.append(f"{display_name} is {action}")
 
         if not active_people:
             return "I don't see anyone around right now."
         if len(active_people) == 1:
             return f"I see {active_people[0]}."
-        if len(active_people) == 2:
-            return f"I see {active_people[0]} and {active_people[1]}."
 
-        return f"I see {', '.join(active_people[:-1])}, and {active_people[-1]}."
+        return "I see a few people: " + ", and ".join(active_people)
 
     def _recognize_faces_worker(self, pending_identifications: list) -> None:
-        """Takes a list of tuples: (yolo_id, rgb_image_crop)"""
         for yolo_id, face_crop_rgb in pending_identifications:
             if yolo_id not in self._trackers:
                 continue
@@ -154,97 +164,108 @@ class FaceModelNode:
 
         self._is_recognizing = False
 
-    def _get_spatial_description(self, cx: float, frame_width: int) -> str:
+    def _get_spatial_description(self, cx: float, frame_width: int) -> tuple[str, str]:
+        """Returns (Conversational Direction, Sonar Key)"""
         third = frame_width / 3
         if cx < third:
-            return "on your left"
+            return "on your left", "left"
         elif cx > 2 * third:
-            return "on your right"
-        return "in front of you"
+            return "on your right", "right"
+        return "directly ahead", "center"
 
-    def _analyze_and_announce_intent(self, frame_width: int):
+    def _analyze_and_announce_intent(self, frame_width: int, frame_height: int):
         current_time = time.time()
+
         for yolo_id, tracker in list(self._trackers.items()):
             name = tracker.name
 
-            # 1. EXPIRATION
             if not tracker.is_active:
                 if len(tracker.history) > 0 and (
-                    current_time - tracker.history[-1][0] > 10.0
+                    current_time - tracker.history[-1][0] > 5.0
                 ):
                     del self._trackers[yolo_id]
                 continue
 
-            # 2. FLICKER IGNORE
-            if name == "Scanning..." or len(tracker.history) < 10:
+            if name == "Scanning..." and (current_time - tracker.first_seen_time > 2.0):
+                tracker.name = "Unknown person"
+                name = "Unknown person"
+
+            if name == "Scanning..." or len(tracker.history) < 8:
                 continue
 
             newest_cx = tracker.history[-1][2]
-            direction = self._get_spatial_description(newest_cx, frame_width)
+            direction, sonar_key = self._get_spatial_description(newest_cx, frame_width)
+            display_name = "Someone" if name == "Unknown person" else name
 
-            # 3. ENTRANCE
+            message = ""
+            priority = EventPriority.NORMAL
+            cooldown = 15.0
+
             if not tracker.has_announced_entrance:
                 tracker.has_announced_entrance = True
                 tracker.last_announced_state = "entered"
+
                 if name != "Unknown person":
-                    ev = ModelEvent(
-                        source="vision_tracking",
-                        type="person_entered",
-                        message=f"{name} is here, {direction}.",
-                        priority=EventPriority.NORMAL,
-                        dedupe_key=f"entered:{name}",
-                        cooldown_s=30.0,
-                    )
-                    self.speech.post_event(ev)
-                    tracker.last_event_time = current_time
-                continue
+                    message = f"I see {name} {direction}."
+                    cooldown = 30.0
+            else:
+                history_list = list(tracker.history)
+                old_h_avg = np.mean([h for _, h, _ in history_list[:3]])
+                new_h_avg = np.mean([h for _, h, _ in history_list[-3:]])
+                height_diff = new_h_avg - old_h_avg
+                growth_threshold = max(30, old_h_avg * 0.15)
 
-            # 4. INTENT SMOOTHING
-            history_list = list(tracker.history)
-            old_heights = sorted([h for _, h, _ in history_list[:5]])
-            new_heights = sorted([h for _, h, _ in history_list[-5:]])
+                # --- SENSOR FUSION LOGIC ---
+                # Grab the physical distance for the specific zone the person is standing in
+                physical_dist_cm = self._latest_sonar[sonar_key]
 
-            oldest_h = old_heights[len(old_heights) // 2]
-            newest_h = new_heights[len(new_heights) // 2]
-            height_diff = newest_h - oldest_h
-            threshold = max(80, oldest_h * 0.20)
+                current_state = "stationary"
 
-            current_state = "stationary"
-            if newest_h > 400:
-                current_state = "very_close"
-            elif height_diff > threshold:
-                current_state = "approaching"
-            elif height_diff < -threshold:
-                current_state = "leaving"
+                # Fusion Rule 1: Absolute Proximity.
+                # If YOLO says they take up 70% of the screen OR the sonar says there is an object < 80cm away in that direction.
+                if new_h_avg > (frame_height * 0.70) or physical_dist_cm < 80.0:
+                    current_state = "very_close"
 
-            # 5. ANNOUNCEMENTS
-            time_since_last_event = current_time - tracker.last_event_time
-            state_changed = current_state != tracker.last_announced_state
+                # Fusion Rule 2: Approaching.
+                # If YOLO bounding box is growing rapidly.
+                elif height_diff > growth_threshold:
+                    current_state = "approaching"
 
-            if state_changed and time_since_last_event > 5.0:
-                message = ""
-                priority = EventPriority.NORMAL
+                # Fusion Rule 3: Leaving.
+                elif height_diff < -growth_threshold:
+                    current_state = "leaving"
 
-                if current_state == "approaching":
-                    message = f"{name} is approaching."
-                elif current_state == "leaving":
-                    message = f"{name} is walking away."
-                elif current_state == "very_close":
-                    message = f"{name} is right in front of you."
-                    priority = EventPriority.HIGH
+                # ----------------------------
 
-                if message and name != "Unknown person":
-                    ev = ModelEvent(
-                        source="vision_tracking",
-                        type="person_intent",
-                        message=message,
-                        priority=priority,
-                        dedupe_key=f"intent:{name}:{current_state}",
-                        cooldown_s=15.0,
-                    )
-                    self.speech.post_event(ev)
+                time_since_last_event = current_time - tracker.last_event_time
+                state_changed = current_state != tracker.last_announced_state
 
-                tracker.last_announced_state = current_state
+                if state_changed and time_since_last_event > 4.0:
+                    if current_state == "very_close":
+                        message = f"{display_name} is right in front of you."
+                        priority = EventPriority.HIGH
+                        cooldown = 8.0
+                    elif current_state == "approaching":
+                        message = f"{display_name} is approaching {direction}."
+                        cooldown = 12.0
+                    elif name != "Unknown person":
+                        if current_state == "leaving":
+                            message = f"{name} is walking away."
+                            cooldown = 20.0
+
+                if message:
+                    tracker.last_announced_state = current_state
+
+            if message:
+                ev = ModelEvent(
+                    source="vision_tracking",
+                    type="person_intent",
+                    message=message,
+                    priority=priority,
+                    dedupe_key=f"intent:{name}:{tracker.last_announced_state}",
+                    cooldown_s=cooldown,
+                )
+                shared_event_bus.publish("speak_request", ev, run_async=True)
                 tracker.last_event_time = current_time
 
     def on_raw_frame(self, event: RawFrameEvent) -> None:
@@ -253,10 +274,9 @@ class FaceModelNode:
             return
 
         frame = event.frame
-        frame_width = frame.shape[1]
+        frame_height, frame_width = frame.shape[:2]
         current_time = time.time()
 
-        # 1. RUN YOLO
         results = self._yolo_model.track(
             frame, classes=[0], persist=True, verbose=False
         )
@@ -265,9 +285,8 @@ class FaceModelNode:
             tracker.is_active = False
 
         pending_identifications = []
-        drawing_data = []  # Data sent to Aggregator
+        drawing_data = []
 
-        # 2. PROCESS TRACKS
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
             track_ids = results[0].boxes.id.int().cpu().tolist()
@@ -284,7 +303,6 @@ class FaceModelNode:
                 tracker.is_active = True
                 tracker.history.append((current_time, h, cx))
 
-                # Bundle visual data to send to the drawing node
                 tracker_state = (
                     tracker.last_announced_state
                     if tracker.has_announced_entrance
@@ -294,30 +312,28 @@ class FaceModelNode:
                     {
                         "box": (x1, y1, x2, y2),
                         "label": f"{tracker.name} ({tracker_state})",
+                        "color": (255, 165, 0),
                     }
                 )
 
                 if tracker.name == "Scanning...":
                     pad = 20
                     y1_pad = max(0, y1 - pad)
-                    y2_pad = min(frame.shape[0], y2 + pad)
+                    y2_pad = min(frame_height, y2 + pad)
                     x1_pad = max(0, x1 - pad)
-                    x2_pad = min(frame.shape[1], x2 + pad)
+                    x2_pad = min(frame_width, x2 + pad)
 
                     full_body_crop = frame[y1_pad:y2_pad, x1_pad:x2_pad]
                     if full_body_crop.shape[0] > 0 and full_body_crop.shape[1] > 0:
                         rgb_crop = cv2.cvtColor(full_body_crop, cv2.COLOR_BGR2RGB)
                         pending_identifications.append((track_id, rgb_crop))
 
-        # 3. ANALYSIS & BG RECOGNITION
-        self._analyze_and_announce_intent(frame_width)
+        self._analyze_and_announce_intent(frame_width, frame_height)
 
         if not self._is_recognizing and len(pending_identifications) > 0:
             self._is_recognizing = True
             self._executor.submit(self._recognize_faces_worker, pending_identifications)
 
-        # 4. PUBLISH RESULTS FOR DRAWING
-        # CRITICAL: run_async=False prevents thread exhaustion for video frames!
         shared_event_bus.publish(
             "model_result",
             ModelResultEvent(event.frame_id, "FaceModel", drawing_data),
@@ -325,9 +341,6 @@ class FaceModelNode:
         )
 
 
-# Utility function to easily boot this specific module from main.py
 def build_default_face_node() -> FaceModelNode:
     cfg = FaceRecognitionConfig()
-    speech = SpeechClient(base_url=cfg.tts_router_url)
-
-    return FaceModelNode(cfg, speech)
+    return FaceModelNode(cfg)

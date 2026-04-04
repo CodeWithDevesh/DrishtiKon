@@ -2,54 +2,55 @@ import time
 import os
 import sys
 from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv()
-DIRECTION_API = os.getenv("DIRECTION_API")
 
 # Ensure project root is on sys.path so `import src...` works.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# from integrated_system.scripts.run_nav import NavServerNode
-from src.services.nav.nav import NavServerNode
 from src.hardware.camera import CameraNode
 from src.models.face_recognition.model import build_default_face_node
 from src.models.weapon_detection.model import build_default_weapon_node
 from src.services.cameraFeed.server import NetworkServerNode
-from src.core.aggregator import AggregatorNode 
+from src.core.aggregator import AggregatorNode
+from src.hardware.ultrasonic import UltrasonicNode
+from src.speech.speech_node import SpeechNode
+from src.models.object_detection.model import build_default_object_node
+
 
 def main():
     print("=============================================")
-    print("  Starting Multi-Model Vision Pipeline...    ")
+    print("  Starting Integrated Robotics Pipeline...   ")
     print("=============================================")
 
     try:
-        print("\n[*] Initializing Face Recognition...")
+        print("[*] Initializing Smart Audio Router...")
+        speech_node = SpeechNode()
+
+        print("\n[*] Initializing Vision Models...")
         face_node = build_default_face_node()
-
-        print("[*] Initializing Weapon Detection...")
         weapon_node = build_default_weapon_node()
-
-        print("[*] Starting Navigation API Server on port 7000...")
-        nav_node = NavServerNode(api_key=DIRECTION_API)
-        nav_node.start();
-        
-
-        # Wire up the Central Aggregator!
-        print("[*] Initializing Central Aggregator...")
         aggregator = AggregatorNode(expected_models=["FaceModel", "WeaponModel"])
 
         print("[*] Starting TCP Video Server...")
         server = NetworkServerNode(port=9999)
         server.start()
 
+        print("[*] Warming up Hardware Sensors...")
+        # Update these pin tuples to match your physical Pi wiring: (TRIG, ECHO)
+        ultrasonic = UltrasonicNode(
+            left_pins=(5, 6), center_pins=(13, 19), right_pins=(26, 21)
+        )
+        ultrasonic.start()
+
+        print("[*] Initializing Guidance Systems...")
+        obstacle_guidance = build_default_object_node()
+
         print("[*] Warming up Camera Hardware...")
         camera = CameraNode(camera_index=0)
         camera.start()
 
         print("\n[+] System is fully operational!")
-        print("[+] Waiting for client to connect to view feed...")
         print("=============================================\n")
 
         while True:
@@ -61,7 +62,17 @@ def main():
         print(f"\n[!] Fatal Error in main loop: {e}")
     finally:
         print("[-] Pipeline terminated.")
+
+        # Cleanup GPIO safely before shutting down
+        try:
+            import RPi.GPIO as GPIO
+
+            GPIO.cleanup()
+        except:
+            pass
+
         os._exit(0)
+
 
 if __name__ == "__main__":
     main()
