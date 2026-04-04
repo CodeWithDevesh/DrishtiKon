@@ -6,6 +6,7 @@ import cv2
 import subprocess
 from pathlib import Path
 # from dotenv import load_dotenv
+import threading
 
 # # Load Environment Variables
 # load_dotenv()
@@ -16,11 +17,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
 # --- IMPORTS ---
 # Core & Logic
 from src.core.event_bus import shared_event_bus
 from src.core.aggregator import AggregatorNode 
 from src.core.voice_assistant import VoiceAssistant
+from src.services.streamer import start_http_streamer
+from src.hardware.camera import CameraNode
+from src.models.face_recognition.model import build_default_face_node
+from src.models.weapon_detection.model import build_default_weapon_node
+from src.services.cameraFeed.server import NetworkServerNode
+from src.core.aggregator import AggregatorNode
+from src.hardware.ultrasonic import UltrasonicNode
 from src.speech.speech_node import SpeechNode
 
 # Services & Networking
@@ -60,8 +69,9 @@ def main():
         assistant = VoiceAssistant()
         assistant.start()
 
+
         # 3. Start Networking Services
-        print("[*] Starting Navigation API Server...")
+        # print("[*] Starting Navigation API Server...")
         # nav_node = NavServerNode(api_key=DIRECTION_API)
         # nav_node.start()
 
@@ -69,8 +79,8 @@ def main():
         tcp_server = NetworkServerNode(port=9999)
         tcp_server.start()
 
-        print("[*] Starting React Native HTTP Streamer (Port 8000)...")
-        stream_thread = threading.Thread(target=start_http_streamer, args=(8000,), daemon=True)
+        print("[*] Starting React Native Video Stream on Port 8000...")
+        stream_thread = threading.Thread(target=start_http_streamer, args=(8002,), daemon=True)
         stream_thread.start()
 
         # 4. Start Hardware Sensors
