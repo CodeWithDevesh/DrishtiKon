@@ -22,7 +22,7 @@ class ObjectDetectionNode:
         }
 
         self.debug_mode = debug_mode
-        self.last_debug_time = 0.0
+        self._last_debug_time = 0.0
 
         # --- NOISE FILTERING ---
         # Store the last 5 readings to filter out acoustic ghosts/spikes
@@ -66,7 +66,7 @@ class ObjectDetectionNode:
 
         if self.debug_mode:
             current_time = time.time()
-            if current_time - self._last_debug_time > 0.5: # Print twice a second
+            if current_time - self._last_debug_time > 0.5:  # Print twice a second
                 print(f"[Sonar Debug] L: {l:6.1f}cm | C: {c:6.1f}cm | R: {r:6.1f}cm")
                 self._last_debug_time = current_time
 
