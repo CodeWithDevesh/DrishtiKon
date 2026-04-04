@@ -17,6 +17,7 @@ from src.core.aggregator import AggregatorNode
 from src.hardware.ultrasonic import UltrasonicNode
 from src.speech.speech_node import SpeechNode
 from src.models.object_detection.model import build_default_object_node
+from src.core.voice_assistant import VoiceAssistant
 
 
 def main():
@@ -54,6 +55,10 @@ def main():
         print("[*] Warming up Camera Hardware...")
         camera = CameraNode(camera_index=0)
         camera.start()
+
+        print("[*] Initializing voice assistant")
+        assistant = VoiceAssistant()
+        assistant.start()
 
         print("\n[+] System is fully operational!")
         print("=============================================\n")
