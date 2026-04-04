@@ -37,7 +37,7 @@ def main():
 
 
         print("[*] Starting React Native Video Stream on Port 8000...")
-        stream_thread = threading.Thread(target=start_http_streamer, args=(8000,), daemon=True)
+        stream_thread = threading.Thread(target=start_http_streamer, args=(8002,), daemon=True)
         stream_thread.start()
 
         print("[*] Starting TCP Video Server...")

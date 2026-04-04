@@ -34,6 +34,6 @@ def video_feed():
     return Response(generate_mjpeg(), 
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-def start_http_streamer(port=8000):
+def start_http_streamer(port=8002):
     # run_reloader=False is mandatory when running in a thread
     app.run(host='0.0.0.0', port=port, threaded=True, debug=False, use_reloader=False)
