@@ -38,8 +38,10 @@ from src.hardware.ultrasonic import UltrasonicNode
 # Models
 from src.models.weapon_detection.model import build_default_weapon_node
 from src.models.ocr.model import build_default_ocr_node 
-#from src.models.face_recognition.model import build_default_face_node
+from src.models.face_recognition.model import build_default_face_node
 from src.models.object_detection.model import build_default_object_node
+from src.services.Add_People.add_people import PeopleRegistrar
+from src.services.snapshot.snapshot import SnapshotNode
 
 def main():
     print("=============================================")
@@ -72,6 +74,10 @@ def main():
         print("[*] Starting TCP Video Server (Port 9999)...")
         tcp_server = NetworkServerNode(port=9999)
         tcp_server.start()
+
+        register_node = PeopleRegistrar()
+
+        snap_node = SnapshotNode()
 
         print("[*] Starting React Native Video Stream on Port 8000...")
         stream_thread = threading.Thread(target=start_http_streamer, args=(8002,), daemon=True)

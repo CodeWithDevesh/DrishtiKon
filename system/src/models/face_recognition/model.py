@@ -12,6 +12,12 @@ import cv2
 import numpy as np
 import face_recognition
 from ultralytics import YOLO
+import urllib.request
+import cloudinary
+import cloudinary.api
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Project-specific imports
 from src.core.events import (
@@ -46,50 +52,89 @@ class FaceModelNode:
 
     def __init__(self, cfg: FaceRecognitionConfig):
         self.cfg = cfg
-
-        print("[Vision] Loading YOLOv8 Face Tracking with Sensor Fusion...")
-        self._yolo_model = YOLO("yolov8n_ncnn_model")
+        
+        # 1. Cloudinary Configuration
+        cloudinary.config(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+            secure=True
+        )
+        
+        # 2. Tracking and Encodings
+        self._loaded_public_ids = set() 
         self._known_face_encodings: list = []
         self._known_face_names: list = []
-
+        
+        # 3. Model Initialization
+        print("[Vision] Loading YOLOv8 Face Tracking with Sensor Fusion...")
+        self._yolo_model = YOLO("yolov8n_ncnn_model")
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._is_recognizing = False
         self._trackers: dict[int, PersonTracker] = {}
-
         self._frame_count = 0
         self._process_every_n_frames = 3
 
-        # --- NEW: Ultrasonic State Cache ---
+        # 4. Sensor Fusion State
         self._latest_sonar = {"left": 999.0, "center": 999.0, "right": 999.0}
 
+        # 5. Initial Sync from Cloudinary
         self._load_known_faces()
 
-        # Native Event Bus Subscriptions
+        # 6. Event Bus Subscriptions
+        shared_event_bus.subscribe("reload_faces", self._load_known_faces)
         shared_event_bus.subscribe("raw_frame", self.on_raw_frame)
         shared_event_bus.subscribe("voice_command", self._on_voice_command)
-        shared_event_bus.subscribe(
-            "ultrasonic_data", self.on_ultrasonic_data
-        )  # <-- SENSOR FUSION
+        shared_event_bus.subscribe("ultrasonic_data", self.on_ultrasonic_data)
 
-    def _load_known_faces(self) -> None:
-        if not os.path.exists(self.cfg.face_db_path):
-            print(f"[Warning] Face database path not found: {self.cfg.face_db_path}")
-            return
+    def _load_known_faces(self, event_data=None) -> None:
+        """Downloads new faces from Cloudinary and generates encodings."""
+        print("[Vision] Syncing faces from Cloudinary folder: blind_nav_faces/ ...")
+        
+        try:
+            # List images in the folder
+            resources = cloudinary.api.resources(
+                type="upload", 
+                prefix="blind_nav_faces/",
+                max_results=100
+            )
 
-        print("[Vision] Loading known faces into memory...")
-        for filename in os.listdir(self.cfg.face_db_path):
-            if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-                filepath = os.path.join(self.cfg.face_db_path, filename)
-                name = os.path.splitext(filename)[0].replace("_", " ")
-                try:
-                    image = face_recognition.load_image_file(filepath)
-                    encodings = face_recognition.face_encodings(image)
+            new_faces_count = 0
+            for asset in resources.get('resources', []):
+                public_id = asset['public_id']
+                
+                # Cache check: Only process if not already loaded
+                if public_id not in self._loaded_public_ids:
+                    url = asset['secure_url']
+                    print(f"[Vision] Found new face in cloud: {public_id}")
+
+                    # 1. Download image directly to memory
+                    with urllib.request.urlopen(url) as response:
+                        img_array = np.asarray(bytearray(response.read()), dtype=np.uint8)
+                        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if image is None: continue
+                        
+                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                    # 2. Generate Face Encoding
+                    encodings = face_recognition.face_encodings(rgb_image)
                     if encodings:
+                        # "blind_nav_faces/Soumyajeet_Ghatak" -> "Soumyajeet Ghatak"
+                        clean_name = public_id.split('/')[-1].replace("_", " ")
+                        
                         self._known_face_encodings.append(encodings[0])
-                        self._known_face_names.append(name)
-                        print(f"Loaded: {name}")
-                except Exception as e:
-                    print(f"[Error] Failed to load {filename}: {e}")
+                        self._known_face_names.append(clean_name)
+                        self._loaded_public_ids.add(public_id)
+                        new_faces_count += 1
+                        print(f"✅ Successfully encoded: {clean_name}")
+            
+            if new_faces_count > 0:
+                print(f"[Vision] Sync complete. Added {new_faces_count} new faces.")
+            else:
+                print("[Vision] Cloudinary sync complete. No new faces found.")
+
+        except Exception as e:
+            print(f"❌ Cloudinary Sync Error: {e}")
 
     # --- NEW: Catch Ultrasonic Updates ---
     def on_ultrasonic_data(self, event: UltrasonicEvent):
