@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class WeaponDetectionConfig:
     # Pulls the path from your .env file
     model_path: str = os.getenv("WEAPON_MODEL_PATH", "./assets/weapon_detection/best_ncnn_model")
-    confidence_threshold: float = float(os.getenv("WEAPON_CONFIDENCE", "0.5"))
+    confidence_threshold: float = float(os.getenv("WEAPON_CONFIDENCE", "0.6"))
     
     # Camera settings
     camera_index: int = int(os.getenv("CAMERA_INDEX", "0"))
