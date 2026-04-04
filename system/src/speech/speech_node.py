@@ -9,7 +9,7 @@ from src.core.event_bus import shared_event_bus
 from src.services.tts import build_tts_provider
 from src.speech.router import SpeechRouter
 
-class PreemptiveSpeechNode:
+class SpeechNode:
     """Listens to the event bus, manages the queue, and forcefully interrupts low-priority speech."""
     
     def __init__(self):
