@@ -5,11 +5,11 @@ import threading
 import cv2
 import subprocess
 from pathlib import Path
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import threading
 
 # # Load Environment Variables
-# load_dotenv()
+load_dotenv()
 DIRECTION_API = os.getenv("DIRECTION_API")
 
 # Ensure project root is on sys.path
@@ -44,7 +44,7 @@ from src.hardware.ultrasonic import UltrasonicNode
 # Models
 from src.models.weapon_detection.model import build_default_weapon_node
 from src.models.ocr.model import build_default_ocr_node 
-# from src.models.face_recognition.model import build_default_face_node
+#from src.models.face_recognition.model import build_default_face_node
 from src.models.object_detection.model import build_default_object_node
 
 def main():
@@ -56,7 +56,7 @@ def main():
     try:
         # 1. Initialize Vision Models & Guidance
         print("[*] Initializing AI Models (Weapon, OCR, Objects)...")
-        # face_node = build_default_face_node()
+        face_node = build_default_face_node()
         weapon_node = build_default_weapon_node()
         ocr_node = build_default_ocr_node()
         obstacle_guidance = build_default_object_node()
@@ -64,16 +64,16 @@ def main():
         # 2. Initialize Central Logic & Audio
         print("[*] Initializing Central Aggregator & Audio Systems...")
         # Listening for all key vision outputs (FaceModel removed)
-        aggregator = AggregatorNode(expected_models=[ "WeaponModel", "OCRModel", "ObjectModel" ])
+        aggregator = AggregatorNode(expected_models=["FaceModel" , "WeaponModel", "OCRModel", "ObjectModel" ])
         speech_node = SpeechNode()
         assistant = VoiceAssistant()
         assistant.start()
 
 
         # 3. Start Networking Services
-        # print("[*] Starting Navigation API Server...")
-        # nav_node = NavServerNode(api_key=DIRECTION_API)
-        # nav_node.start()
+        print("[*] Starting Navigation API Server...")
+        nav_node = NavServerNode(api_key=DIRECTION_API)
+        nav_node.start()
 
         print("[*] Starting TCP Video Server (Port 9999)...")
         tcp_server = NetworkServerNode(port=9999)
@@ -101,16 +101,7 @@ def main():
 
         # 5. Management Loop
         while True:
-            # Local feed monitoring
-            frame = getattr(camera, 'frame', None) or getattr(camera, '_frame', None)
-            
-            if frame is not None:
-                cv2.imshow("DrishtiKon System Monitor", frame)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
-            time.sleep(0.01)
+            time.sleep(1)
                 
     except KeyboardInterrupt:
         print("\n\n[-] Shutdown initiated by user...")
