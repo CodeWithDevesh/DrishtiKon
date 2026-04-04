@@ -23,13 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.event_bus import shared_event_bus
 from src.core.aggregator import AggregatorNode 
 from src.core.voice_assistant import VoiceAssistant
-from src.services.streamer import start_http_streamer
-from src.hardware.camera import CameraNode
-from src.models.face_recognition.model import build_default_face_node
-from src.models.weapon_detection.model import build_default_weapon_node
-from src.services.cameraFeed.server import NetworkServerNode
 from src.core.aggregator import AggregatorNode
-from src.hardware.ultrasonic import UltrasonicNode
 from src.speech.speech_node import SpeechNode
 
 # Services & Networking
