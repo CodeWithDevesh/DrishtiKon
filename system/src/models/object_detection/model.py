@@ -34,7 +34,7 @@ class ObjectDetectionNode:
         self.debug_mode = debug_mode
         self._last_debug_time = 0.0
         
-        # --- NEW: Voice Activation State ---
+        # --- Voice Activation State ---
         self._is_active = False  # Starts OFF, waiting for "object detection on"
 
         # Subscriptions
@@ -43,7 +43,7 @@ class ObjectDetectionNode:
         
         print("[Navigation] Obstacle Guidance Node initialized. Awaiting voice activation.")
 
-    # --- NEW: Voice Command Handler ---
+    # --- Voice Command Handler ---
     def _on_voice_command(self, data):
         """
         Listens to the event bus for specific keywords to toggle the model.
@@ -66,7 +66,7 @@ class ObjectDetectionNode:
                 self.history["center"].clear()
                 self.history["right"].clear()
 
-    # --- NEW: Status Announcement ---
+    # --- Status Announcement ---
     def _announce_status(self, message: str):
         """
         Uses the existing ModelEvent system to speak confirmation of the state change.
@@ -85,7 +85,7 @@ class ObjectDetectionNode:
         return 0.0 < dist < 400.0
 
     def on_ultrasonic_data(self, event: UltrasonicEvent):
-        # --- NEW: Gatekeeper Check ---
+        # --- Gatekeeper Check ---
         # If the model is turned off, ignore the data and do nothing
         if not self._is_active:
             return
