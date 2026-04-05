@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "BlindNavApp",
+    "slug": "BlindNavApp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "blindnavapp",
+    "userInterfaceStyle": "dark", 
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.soumyajeet.blindnav",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "BlindNav needs your location to track the device in real-time.",
+        "NSLocationAlwaysUsageDescription": "BlindNav needs background location to provide continuous safety updates."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#121212",
+        "foregroundImage": "./assets/images/android-icon-foreground.png"
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#000000"
+        }
+      ]
+    ]
+  }
+}
