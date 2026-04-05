@@ -3,10 +3,10 @@ import os
 import sys
 import threading
 import cv2
-import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 import threading
+
 
 # # Load Environment Variables
 load_dotenv()
@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # --- IMPORTS ---
 # Core & Logic
 from src.core.event_bus import shared_event_bus
-from src.core.aggregator import AggregatorNode 
+from src.core.aggregator import AggregatorNode
 from src.core.voice_assistant import VoiceAssistant
 from src.core.aggregator import AggregatorNode
 from src.speech.speech_node import SpeechNode
@@ -37,9 +37,13 @@ from src.hardware.ultrasonic import UltrasonicNode
 
 # Models
 from src.models.weapon_detection.model import build_default_weapon_node
-from src.models.ocr.model import build_default_ocr_node 
-#from src.models.face_recognition.model import build_default_face_node
+from src.models.ocr.model import build_default_ocr_node
+from src.models.face_recognition.model import build_default_face_node
 from src.models.object_detection.model import build_default_object_node
+
+from src.services.llm.orchestrator import LLMOrchestratorNode, SystemTools
+from src.speech.client import SpeechClient
+
 
 def main():
     print("=============================================")
@@ -58,11 +62,12 @@ def main():
         # 2. Initialize Central Logic & Audio
         print("[*] Initializing Central Aggregator & Audio Systems...")
         # Listening for all key vision outputs (FaceModel removed)
-        aggregator = AggregatorNode(expected_models=["FaceModel" , "WeaponModel", "OCRModel", "ObjectModel" ])
+        aggregator = AggregatorNode(
+            expected_models=["FaceModel", "WeaponModel", "OCRModel", "ObjectModel"]
+        )
         speech_node = SpeechNode()
         assistant = VoiceAssistant()
         assistant.start()
-
 
         # 3. Start Networking Services
         print("[*] Starting Navigation API Server...")
@@ -74,7 +79,9 @@ def main():
         tcp_server.start()
 
         print("[*] Starting React Native Video Stream on Port 8000...")
-        stream_thread = threading.Thread(target=start_http_streamer, args=(8002,), daemon=True)
+        stream_thread = threading.Thread(
+            target=start_http_streamer, args=(8002,), daemon=True
+        )
         stream_thread.start()
 
         # 4. Start Hardware Sensors
@@ -84,6 +91,11 @@ def main():
             left_pins=(17, 18), center_pins=(27, 23), right_pins=(22, 24)
         )
         ultrasonic.start()
+
+        print("[*] Starting the voice assistant")
+        speechClient = SpeechClient()
+        systemTools = SystemTools(face_node, ultrasonic)
+        LLMOrchestratorNode(speechClient, systemTools)
 
         print("[*] Warming up Camera Hardware...")
         camera = CameraNode(camera_index=0)
@@ -96,21 +108,22 @@ def main():
         # 5. Management Loop
         while True:
             time.sleep(1)
-                
+
     except KeyboardInterrupt:
         print("\n\n[-] Shutdown initiated by user...")
     except Exception as e:
         print(f"\n[!] Fatal System Error: {e}")
     finally:
         print("[-] Cleaning up resources and GPIO...")
-        
+
         # Stop Voice Assistant
-        if 'assistant' in locals():
+        if "assistant" in locals():
             assistant.stop()
-        
+
         # Cleanup GPIO for Raspberry Pi
         try:
             import RPi.GPIO as GPIO
+
             GPIO.cleanup()
         except ImportError:
             print("[!] RPi.GPIO not found, skipping hardware cleanup.")
@@ -120,6 +133,7 @@ def main():
         cv2.destroyAllWindows()
         print("[-] Pipeline terminated.")
         os._exit(0)
+
 
 if __name__ == "__main__":
     main()

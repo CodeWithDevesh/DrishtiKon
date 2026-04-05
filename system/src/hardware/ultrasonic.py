@@ -49,7 +49,7 @@ class UltrasonicNode(threading.Thread):
 
     def _read_distance(self, sensor: SensorConfig) -> float:
         if not GPIO_AVAILABLE:
-            return 100.0 # Return fake 1 meter if testing on PC
+            return 1000.0 # Return fake 1 meter if testing on PC
 
         # 1. Fire the 10-microsecond trigger pulse
         GPIO.output(sensor.trig, True)

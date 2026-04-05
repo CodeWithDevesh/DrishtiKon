@@ -20,7 +20,7 @@ class SpeechNode:
         self.currently_playing_priority: int | None = None
         self._state_lock = threading.Lock()
         
-        # --- NEW: Global Silence Lockout ---
+        # --- Global Silence Lockout ---
         self.global_silence_until: float = 0.0 
         self.SILENCE_DURATION_S = 5.0
         
@@ -39,7 +39,6 @@ class SpeechNode:
         # 1. EARLY LOCKOUT CHECK
         # If we are in lockdown, don't even bother putting NORMAL priority events in the queue
         if time.time() < self.global_silence_until and event.priority != EventPriority.HIGH:
-            # print(f"🔇 [Audio Router] Dropped '{event.message}' (Emergency Silence Active)")
             return
 
         # 2. Enqueue the event
@@ -52,7 +51,7 @@ class SpeechNode:
                 if event.priority.value < self.currently_playing_priority:
                     print(f"⚠️ [PREEMPTION TRIGGERED] Interrupting audio for: '{event.message}'")
                     if self._tts is not None and hasattr(self._tts, "stop"):
-                        self._tts.stop() # Kill the current audio!
+                        self._tts.stop() # Triggers the HybridTTSProvider kill switch!
 
     def _playback_worker(self) -> None:
         while True:
@@ -71,6 +70,7 @@ class SpeechNode:
                 
             try:
                 if self._tts is None:
+                    # Dynamically calls the factory from __init__.py
                     self._tts = build_tts_provider()
                 
                 # 3. Lock the state so the listener knows what priority is currently playing
@@ -79,12 +79,12 @@ class SpeechNode:
                 
                 print(f"📢 [TTS SPEAKING] (Pri:{event.priority.value}): {event.message}")
                 
-                # --- NEW: TRIGGER LOCKOUT ---
+                # 4. TRIGGER LOCKOUT
                 # If this is a HIGH priority event (Weapon or Obstacle crash), silence the system!
                 if event.priority == EventPriority.HIGH:
                     self.global_silence_until = current_time + self.SILENCE_DURATION_S
                 
-                # 4. Play the audio (Blocking)
+                # 5. Play the audio (Blocking until finished or preempted)
                 self._tts.speak(
                     event.message,
                     timestamp=event.metadata.get("timestamp"),
@@ -95,6 +95,6 @@ class SpeechNode:
             except Exception as e:
                 print(f"[SpeechNode] Playback error: {e}")
             finally:
-                # 5. Clear the playing state so the system knows the speaker is free
+                # 6. Clear the playing state so the system knows the speaker is free
                 with self._state_lock:
                     self.currently_playing_priority = None
