@@ -7,7 +7,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 import threading
 
-
 # # Load Environment Variables
 load_dotenv()
 DIRECTION_API = os.getenv("DIRECTION_API")
@@ -37,7 +36,7 @@ from src.hardware.ultrasonic import UltrasonicNode
 
 # Models
 from src.models.weapon_detection.model import build_default_weapon_node
-from src.models.ocr.model import build_default_ocr_node 
+from src.models.ocr.model import build_default_ocr_node
 from src.models.face_recognition.model import build_default_face_node
 from src.models.object_detection.model import build_default_object_node
 from src.services.Add_People.add_people import PeopleRegistrar
@@ -100,7 +99,7 @@ def main():
 
         print("[*] Starting the voice assistant")
         speechClient = SpeechClient()
-        systemTools = SystemTools(face_node, ultrasonic)
+        systemTools = SystemTools(face_node, ultrasonic, snap_node, ocr_node, obstacle_guidance)
         LLMOrchestratorNode(speechClient, systemTools)
 
         print("[*] Warming up Camera Hardware...")

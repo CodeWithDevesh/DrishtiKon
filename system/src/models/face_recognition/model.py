@@ -25,8 +25,7 @@ from src.core.events import (
     ModelEvent,
     RawFrameEvent,
     ModelResultEvent,
-    SpeakRequest,
-    UltrasonicEvent,  # <-- NEW IMPORT
+    UltrasonicEvent,
 )
 from src.core.event_bus import shared_event_bus
 from src.models.face_recognition.config import FaceRecognitionConfig
@@ -48,24 +47,25 @@ class FaceModelNode:
     """
     Subscribes to raw frames and ultrasonic data.
     Uses Sensor Fusion (Camera + Sonar) to accurately determine intent.
+    Acts as a Hardware Helper for the Orchestrator's describe_scene tool.
     """
 
     def __init__(self, cfg: FaceRecognitionConfig):
         self.cfg = cfg
-        
+
         # 1. Cloudinary Configuration
         cloudinary.config(
             cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
             api_key=os.getenv("CLOUDINARY_API_KEY"),
             api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-            secure=True
+            secure=True,
         )
-        
+
         # 2. Tracking and Encodings
-        self._loaded_public_ids = set() 
+        self._loaded_public_ids = set()
         self._known_face_encodings: list = []
         self._known_face_names: list = []
-        
+
         # 3. Model Initialization
         print("[Vision] Loading YOLOv8 Face Tracking with Sensor Fusion...")
         self._yolo_model = YOLO("yolov8n_ncnn_model")
@@ -81,53 +81,48 @@ class FaceModelNode:
         # 5. Initial Sync from Cloudinary
         self._load_known_faces()
 
-        # 6. Event Bus Subscriptions
+        # 6. Event Bus Subscriptions (Removed voice_command!)
         shared_event_bus.subscribe("reload_faces", self._load_known_faces)
         shared_event_bus.subscribe("raw_frame", self.on_raw_frame)
-        shared_event_bus.subscribe("voice_command", self._on_voice_command)
         shared_event_bus.subscribe("ultrasonic_data", self.on_ultrasonic_data)
 
     def _load_known_faces(self, event_data=None) -> None:
         """Downloads new faces from Cloudinary and generates encodings."""
         print("[Vision] Syncing faces from Cloudinary folder: blind_nav_faces/ ...")
-        
+
         try:
-            # List images in the folder
             resources = cloudinary.api.resources(
-                type="upload", 
-                prefix="blind_nav_faces/",
-                max_results=100
+                type="upload", prefix="blind_nav_faces/", max_results=100
             )
 
             new_faces_count = 0
-            for asset in resources.get('resources', []):
-                public_id = asset['public_id']
-                
-                # Cache check: Only process if not already loaded
+            for asset in resources.get("resources", []):
+                public_id = asset["public_id"]
+
                 if public_id not in self._loaded_public_ids:
-                    url = asset['secure_url']
+                    url = asset["secure_url"]
                     print(f"[Vision] Found new face in cloud: {public_id}")
 
-                    # 1. Download image directly to memory
                     with urllib.request.urlopen(url) as response:
-                        img_array = np.asarray(bytearray(response.read()), dtype=np.uint8)
+                        img_array = np.asarray(
+                            bytearray(response.read()), dtype=np.uint8
+                        )
                         image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                        if image is None: continue
-                        
+                        if image is None:
+                            continue
+
                         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-                    # 2. Generate Face Encoding
                     encodings = face_recognition.face_encodings(rgb_image)
                     if encodings:
-                        # "blind_nav_faces/Soumyajeet_Ghatak" -> "Soumyajeet Ghatak"
-                        clean_name = public_id.split('/')[-1].replace("_", " ")
-                        
+                        clean_name = public_id.split("/")[-1].replace("_", " ")
+
                         self._known_face_encodings.append(encodings[0])
                         self._known_face_names.append(clean_name)
                         self._loaded_public_ids.add(public_id)
                         new_faces_count += 1
                         print(f"✅ Successfully encoded: {clean_name}")
-            
+
             if new_faces_count > 0:
                 print(f"[Vision] Sync complete. Added {new_faces_count} new faces.")
             else:
@@ -136,7 +131,6 @@ class FaceModelNode:
         except Exception as e:
             print(f"❌ Cloudinary Sync Error: {e}")
 
-    # --- Catch Ultrasonic Updates ---
     def on_ultrasonic_data(self, event: UltrasonicEvent):
         """Silently caches the latest physical distances to cross-reference with vision."""
 
@@ -147,45 +141,67 @@ class FaceModelNode:
         self._latest_sonar["center"] = clean(event.center_cm)
         self._latest_sonar["right"] = clean(event.right_cm)
 
-    def _on_voice_command(self, transcript: str):
-        if "who" in transcript or "people" in transcript or "describe" in transcript:
-            response = self.describe_scene()
-            event = (
-                SpeechRouter.from_text(response, priority=EventPriority.NORMAL)
-                if "SpeechRouter" in globals()
-                else SpeakRequest(text=response)
-            )
-            shared_event_bus.publish("speak_request", event, run_async=True)
-
+    # --- CALLED BY ORCHESTRATOR ---
     def describe_scene(self) -> str:
-        active_people = []
+        """Passive tool method used by the LLM / Fast-Path Router"""
+        known_people = []
+        unknown_count = 0
+
         for tracker in self._trackers.values():
-            if tracker.is_active and tracker.name != "Scanning...":
-                state = tracker.last_announced_state
-                name = tracker.name
+            if not tracker.is_active or tracker.name == "Scanning...":
+                continue
 
-                if state in ["stationary", "entered", "none"]:
-                    action = "standing nearby"
-                elif state == "very_close":
-                    action = "right in front of you"
-                elif state == "approaching":
-                    action = "coming towards you"
-                elif state == "leaving":
-                    action = "walking away"
-                else:
-                    action = state
+            if tracker.name == "Unknown person":
+                unknown_count += 1
+                continue
 
-                display_name = (
-                    "Someone I don't recognize" if name == "Unknown person" else name
-                )
-                active_people.append(f"{display_name} is {action}")
+            # Process recognized friends
+            state = tracker.last_announced_state
 
-        if not active_people:
+            if state in ["stationary", "entered", "none"]:
+                action = "standing nearby"
+            elif state == "very_close":
+                action = "right in front of you"
+            elif state == "approaching":
+                action = "coming towards you"
+            elif state == "leaving":
+                action = "walking away"
+            else:
+                action = state
+
+            # Note: Deliberately omitting "is" for better TTS flow
+            # e.g., "Devesh standing nearby" rather than "Devesh is standing nearby"
+            known_people.append(f"{tracker.name} {action}")
+
+        # 1. Nobody is visible
+        if not known_people and unknown_count == 0:
             return "I don't see anyone around right now."
-        if len(active_people) == 1:
-            return f"I see {active_people[0]}."
 
-        return "I see a few people: " + ", and ".join(active_people)
+        # 2. Format the unknown count
+        if unknown_count == 0:
+            unknown_str = ""
+        elif unknown_count == 1:
+            unknown_str = "one person I don't recognize"
+        else:
+            unknown_str = f"{unknown_count} people I don't recognize"
+
+        # 3. Only unknown people are visible
+        if not known_people:
+            return f"I see {unknown_str}."
+
+        # 4. Format the known people using natural list grammar
+        if len(known_people) == 1:
+            known_str = known_people[0]
+        elif len(known_people) == 2:
+            known_str = " and ".join(known_people)
+        else:
+            known_str = ", ".join(known_people[:-1]) + ", and " + known_people[-1]
+
+        # 5. Combine known and unknown dynamically
+        if unknown_count > 0:
+            return f"I see {known_str}, along with {unknown_str}."
+
+        return f"I see {known_str}."
 
     def _recognize_faces_worker(self, pending_identifications: list) -> None:
         for yolo_id, face_crop_rgb in pending_identifications:
@@ -210,7 +226,6 @@ class FaceModelNode:
         self._is_recognizing = False
 
     def _get_spatial_description(self, cx: float, frame_width: int) -> tuple[str, str]:
-        """Returns (Conversational Direction, Sonar Key)"""
         third = frame_width / 3
         if cx < third:
             return "on your left", "left"
@@ -219,6 +234,7 @@ class FaceModelNode:
         return "directly ahead", "center"
 
     def _analyze_and_announce_intent(self, frame_width: int, frame_height: int):
+        """Proactively monitors safety and publishes background alerts."""
         current_time = time.time()
 
         for yolo_id, tracker in list(self._trackers.items()):
@@ -237,12 +253,9 @@ class FaceModelNode:
                 tracker.name = "Unknown person"
                 name = "Unknown person"
 
-            # --- THE FIX: ONLY ANNOUNCE FAMILIAR FACES ---
-            # If we don't know who they are, or we haven't seen them long enough, stay silent!
+            # 3. Only Announce Familiar Faces
             if name in ["Scanning...", "Unknown person"] or len(tracker.history) < 8:
                 continue
-
-            # (From here down, we are guaranteed that 'name' is a recognized friend)
 
             newest_cx = tracker.history[-1][2]
             direction, sonar_key = self._get_spatial_description(newest_cx, frame_width)
@@ -251,14 +264,14 @@ class FaceModelNode:
             priority = EventPriority.NORMAL
             cooldown = 15.0
 
-            # 3. Entrance Announcement
+            # 4. Entrance Announcement
             if not tracker.has_announced_entrance:
                 tracker.has_announced_entrance = True
                 tracker.last_announced_state = "entered"
                 message = f"I see {name} {direction}."
                 cooldown = 30.0
 
-            # 4. Intent & Sensor Fusion
+            # 5. Intent & Sensor Fusion
             else:
                 history_list = list(tracker.history)
                 old_h_avg = np.mean([h for _, h, _ in history_list[:3]])
@@ -294,7 +307,7 @@ class FaceModelNode:
                 if message:
                     tracker.last_announced_state = current_state
 
-            # 5. Trigger Speech
+            # 6. Trigger Proactive Speech (Does NOT go through LLM)
             if message:
                 ev = ModelEvent(
                     source="vision_tracking",
@@ -383,3 +396,4 @@ class FaceModelNode:
 def build_default_face_node() -> FaceModelNode:
     cfg = FaceRecognitionConfig()
     return FaceModelNode(cfg)
+

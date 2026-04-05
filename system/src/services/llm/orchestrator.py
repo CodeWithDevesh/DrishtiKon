@@ -1,8 +1,10 @@
+import os
 import time
 import re
 import cv2
 from PIL import Image
 import google.generativeai as genai
+from dotenv import load_dotenv
 
 # Project-specific imports
 from src.core.event_bus import shared_event_bus
@@ -19,9 +21,12 @@ class SystemTools:
     tell the LLM exactly when and how to use them.
     """
 
-    def __init__(self, face_node, sonar_node):
+    def __init__(self, face_node, sonar_node, snapshot_node, ocr_node, nav_node):
         self.face_node = face_node
         self.sonar_node = sonar_node
+        self.snapshot_node = snapshot_node
+        self.ocr_node = ocr_node
+        self.nav_node = nav_node  # The ObjectDetectionNode
 
     def describe_surroundings(self) -> str:
         """
@@ -46,12 +51,57 @@ class SystemTools:
         """
         Captures an image from the user's point-of-view camera.
         Call this tool if the user asks "what is in front of me",
-        "read this text", "what color is this", or asks to analyze
-        their visual surroundings beyond just detecting people.
+        "what color is this", or asks to analyze their visual surroundings.
         """
         print("[LLM Tool] Executing: take_picture")
         # Returns a status flag; the Orchestrator handles the actual image attachment.
         return "picture_ready"
+
+    def register_person(self, name: str) -> str:
+        """
+        Starts the process of registering a new face in the database.
+        Call this if the user asks to "register" someone or "add a person" to the system.
+        You must provide the 'name' of the person extracted from the user's prompt.
+        """
+        print(f"[LLM Tool] Executing: register_person for '{name}'")
+        shared_event_bus.publish("registration_request", data=name)
+        return f"Successfully initiated registration for {name}."
+
+    def save_snapshot_to_cloud(self) -> str:
+        """
+        Captures the current camera frame and uploads it permanently to cloud storage.
+        Call this tool when the user explicitly asks to "save a snap", "take a snapshot",
+        or "upload a photo".
+        """
+        print("[LLM Tool] Executing: save_snapshot_to_cloud")
+        return self.snapshot_node.take_and_upload_snap()
+
+    def read_text(self) -> str:
+        """
+        Scans the camera feed for printed text, handwriting, or signs and reads it aloud.
+        Call this tool if the user asks you to "read this", "scan the text", or
+        "what does this say".
+        """
+        print("[LLM Tool] Executing: read_text")
+        return self.ocr_node.perform_ocr()
+
+    def enable_obstacle_detection(self) -> str:
+        """
+        Turns on the continuous ultrasonic obstacle detection system.
+        Call this tool if the user says "turn on object detection",
+        "enable obstacle guidance", or "activate the sensors".
+        """
+        print("[LLM Tool] Executing: enable_obstacle_detection")
+        return self.nav_node.turn_on()
+
+    def disable_obstacle_detection(self) -> str:
+        """
+        Turns off the continuous ultrasonic obstacle detection system.
+        Call this tool if the user says "turn off object detection",
+        "disable obstacle guidance", or "stop the sensors".
+        """
+        print("[LLM Tool] Executing: disable_obstacle_detection")
+        return self.nav_node.turn_off()
 
 
 # ==========================================
@@ -72,15 +122,22 @@ class LocalCommandRouter:
             r"describe (the scene|surroundings)": self.tools.describe_surroundings,
             r"(check|read) (sensors|distance|sonar)": self.tools.get_obstacle_distances,
             r"how far is the (wall|obstacle)": self.tools.get_obstacle_distances,
+            r"(?:register|add person(?: called| named)?)\s+(?P<name>[a-z\s]+)": self.tools.register_person,
+            r"(take|save|upload) a (snap|snapshot|photo|picture)": self.tools.save_snapshot_to_cloud,
+            r"(read|scan) (this|the text|text)|what does this say": self.tools.read_text,
+            r"(turn|switch|power) on (object detection|obstacle guidance|guidance)": self.tools.enable_obstacle_detection,
+            r"(turn|switch|power) (off|of) (object detection|obstacle guidance|guidance)": self.tools.disable_obstacle_detection,
         }
 
     def route_command(self, transcript: str):
-        """Returns the mapped function if matched, else returns None."""
+        """Returns a tuple of (function, kwargs_dictionary) if matched, else (None, None)."""
         clean_text = transcript.lower().strip()
         for pattern, func in self.routes.items():
-            if re.search(pattern, clean_text):
-                return func
-        return None
+            match = re.search(pattern, clean_text)
+            if match:
+                kwargs = match.groupdict()
+                return func, kwargs
+        return None, None
 
 
 # ==========================================
@@ -99,6 +156,16 @@ class LLMOrchestratorNode:
 
         print("[LLM] Initializing Orchestrator with Hardware Tools...")
 
+        # Securely load API Key
+        load_dotenv()
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "[Error] GEMINI_API_KEY is missing! Please set it in your .env file."
+            )
+
+        genai.configure(api_key=api_key)
+
         # Initialize Gemini 2.5 Flash
         self.model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",
@@ -106,6 +173,11 @@ class LLMOrchestratorNode:
                 self.tools.describe_surroundings,
                 self.tools.get_obstacle_distances,
                 self.tools.take_picture,
+                self.tools.register_person,
+                self.tools.save_snapshot_to_cloud,
+                self.tools.read_text,
+                self.tools.enable_obstacle_detection,
+                self.tools.disable_obstacle_detection,
             ],
             system_instruction=(
                 "You are the autonomous intelligence core of an assistive robotics wearable. "
@@ -122,8 +194,6 @@ class LLMOrchestratorNode:
             ),
         )
         self.chat = self.model.start_chat()
-
-        # Cache for the background video stream
         self._latest_frame = None
 
         # Subscriptions
@@ -141,13 +211,16 @@ class LLMOrchestratorNode:
             # ---------------------------------------------------------
             # THE FAST PATH (Local Interception)
             # ---------------------------------------------------------
-            local_func = self.local_router.route_command(transcript)
+            local_func, kwargs = self.local_router.route_command(transcript)
 
             if local_func:
                 print(
-                    f"[Fast Path] Local Intent Matched! Executing: {local_func.__name__}"
+                    f"[Fast Path] Local Intent Matched! Executing: {local_func.__name__} with args: {kwargs}"
                 )
-                result_text = local_func()
+
+                # Execute dynamically, passing kwargs if they were extracted (like 'name')
+                result_text = local_func(**kwargs) if kwargs else local_func()
+
                 print(f"[Local Output] -> '{result_text}'")
                 self.speech.speak_text(result_text)
                 return  # Exit early, bypassing the LLM
@@ -163,9 +236,17 @@ class LLMOrchestratorNode:
                     function_name = fn.name
                     print(f"[*] LLM requested function: {function_name}")
 
-                    # Handle Standard Tools
-                    if function_name == "describe_surroundings":
-                        result = self.tools.describe_surroundings()
+                    # --- HANDLE STANDARD & NO-ARGUMENT TOOLS ---
+                    if function_name in [
+                        "describe_surroundings",
+                        "get_obstacle_distances",
+                        "save_snapshot_to_cloud",
+                        "read_text",
+                        "enable_obstacle_detection",
+                        "disable_obstacle_detection",
+                    ]:
+                        tool_func = getattr(self.tools, function_name)
+                        result = tool_func()
                         response = self.chat.send_message(
                             {
                                 "function_response": {
@@ -175,8 +256,11 @@ class LLMOrchestratorNode:
                             }
                         )
 
-                    elif function_name == "get_obstacle_distances":
-                        result = self.tools.get_obstacle_distances()
+                    # --- HANDLE ARGUMENT TOOLS ---
+                    elif function_name == "register_person":
+                        # Safely extract the argument the LLM generated
+                        person_name = fn.args.get("name", "Unknown Person")
+                        result = self.tools.register_person(name=person_name)
                         response = self.chat.send_message(
                             {
                                 "function_response": {
@@ -186,7 +270,7 @@ class LLMOrchestratorNode:
                             }
                         )
 
-                    # Handle Multimodal Visual Tool
+                    # --- HANDLE MULTIMODAL VISUAL TOOL ---
                     elif function_name == "take_picture":
                         if self._latest_frame is None:
                             response = self.chat.send_message(

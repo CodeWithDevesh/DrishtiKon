@@ -17,7 +17,7 @@ class ObjectDetectionNode:
     def __init__(self, config: ObjectDetectionConfig, debug_mode: bool = False):
         self.THRESH = {
             "center": {"warn": 120.0, "crit": 50.0},
-            "left": {"crit": 40.0},  # Notice: Removed the warn threshold entirely!
+            "left": {"crit": 40.0},  
             "right": {"crit": 25.0},
         }
 
@@ -27,79 +27,50 @@ class ObjectDetectionNode:
             "right": deque(maxlen=5),
         }
 
-        # Anti-Spam Tracking
         self.last_spoken_intent = ""
         self.last_global_warning_time = 0.0  
 
         self.debug_mode = debug_mode
         self._last_debug_time = 0.0
         
-        # --- Voice Activation State ---
-        self._is_active = False  # Starts OFF, waiting for "object detection on"
+        self._is_active = False  
 
-        # Subscriptions
+        # ONLY subscribe to the ultrasonic hardware, NOT the microphone!
         shared_event_bus.subscribe("ultrasonic_data", self.on_ultrasonic_data)
-        shared_event_bus.subscribe("voice_command", self._on_voice_command) # Listen for voice
         
-        print("[Navigation] Obstacle Guidance Node initialized. Awaiting voice activation.")
+        print("[Navigation] Obstacle Guidance Node initialized. Awaiting Orchestrator activation.")
 
-    # --- Voice Command Handler ---
-    def _on_voice_command(self, data):
-        """
-        Listens to the event bus for specific keywords to toggle the model.
-        """
-        transcript = str(getattr(data, 'transcript', data)).lower().strip()
-        
-        if "object detection on" in transcript:
-            if not self._is_active:
-                self._is_active = True
-                print("[Navigation] Object Detection ENABLED via voice.")
-                self._announce_status("Object detection is now on.")
-                
-        elif "object detection of" in transcript or "object detection off" in transcript:
-            if self._is_active:
-                self._is_active = False
-                print("[Navigation] Object Detection DISABLED via voice.")
-                self._announce_status("Object detection is now off.")
-                # Clear history so old data doesn't trigger instantly when turned back on
-                self.history["left"].clear()
-                self.history["center"].clear()
-                self.history["right"].clear()
+    # --- ORCHESTRATOR COMMANDS ---
+    def turn_on(self) -> str:
+        if not self._is_active:
+            self._is_active = True
+            print("[Navigation] Object Detection ENABLED.")
+            return "Object detection guidance is now on."
+        return "Object detection is already on."
 
-    # --- Status Announcement ---
-    def _announce_status(self, message: str):
-        """
-        Uses the existing ModelEvent system to speak confirmation of the state change.
-        """
-        ev = ModelEvent(
-            source="obstacle_guidance_system",
-            type="system_status",
-            message=message,
-            priority=EventPriority.HIGH, # High priority so the user hears it immediately
-            dedupe_key=f"nav_sys_{message}",
-            cooldown_s=0.0
-        )
-        shared_event_bus.publish("speak_request", ev, run_async=True)
+    def turn_off(self) -> str:
+        if self._is_active:
+            self._is_active = False
+            print("[Navigation] Object Detection DISABLED.")
+            # Clear history so old data doesn't trigger instantly when turned back on
+            self.history["left"].clear()
+            self.history["center"].clear()
+            self.history["right"].clear()
+            return "Object detection guidance is now off."
+        return "Object detection is already off."
 
     def _is_valid(self, dist: float) -> bool:
         return 0.0 < dist < 400.0
 
     def on_ultrasonic_data(self, event: UltrasonicEvent):
-        # --- Gatekeeper Check ---
-        # If the model is turned off, ignore the data and do nothing
+        # Gatekeeper Check
         if not self._is_active:
             return
 
         # 1. Buffer History
-        self.history["left"].append(
-            event.left_cm if self._is_valid(event.left_cm) else 999.0
-        )
-        self.history["center"].append(
-            event.center_cm if self._is_valid(event.center_cm) else 999.0
-        )
-        self.history["right"].append(
-            event.right_cm if self._is_valid(event.right_cm) else 999.0
-        )
+        self.history["left"].append(event.left_cm if self._is_valid(event.left_cm) else 999.0)
+        self.history["center"].append(event.center_cm if self._is_valid(event.center_cm) else 999.0)
+        self.history["right"].append(event.right_cm if self._is_valid(event.right_cm) else 999.0)
 
         if len(self.history["center"]) < 3:
             return
@@ -119,7 +90,6 @@ class ObjectDetectionNode:
         l_crit = l <= self.THRESH["left"]["crit"]
         c_crit = c <= self.THRESH["center"]["crit"]
         r_crit = r <= self.THRESH["right"]["crit"]
-
         c_warn = c <= self.THRESH["center"]["warn"]
 
         message = ""
@@ -127,7 +97,6 @@ class ObjectDetectionNode:
         intent_key = ""
         cooldown = 10.0
 
-        # --- 1. CRITICAL DANGER (Immediate Action Required) ---
         if c_crit:
             message = "Path blocked. Stop."
             priority = EventPriority.HIGH
@@ -148,14 +117,11 @@ class ObjectDetectionNode:
             priority = EventPriority.HIGH
             intent_key = "crit_right"
             cooldown = 5.0
-
-        # --- 2. WARNING STAGE (Only checking the Center path!) ---
         elif c_warn:
-            # If center is blocked, use left/right sensors to find the open path
-            if l > r + 30:  # Left has significantly more room
+            if l > r + 30: 
                 message = "Obstacle ahead. Veer left."
                 intent_key = "warn_veer_left"
-            elif r > l + 30:  # Right has significantly more room
+            elif r > l + 30: 
                 message = "Obstacle ahead. Veer right."
                 intent_key = "warn_veer_right"
             else:
@@ -163,14 +129,12 @@ class ObjectDetectionNode:
                 intent_key = "warn_center_slow"
             cooldown = 10.0
 
-        # --- 3. SMART SPEECH TRIGGER ---
         if not message:
             return
 
         current_time = time.time()
         is_critical = priority == EventPriority.HIGH
 
-        # Global Anti-Spam: Prevent switching between different warnings too fast
         if not is_critical and (current_time - self.last_global_warning_time) < 6.0:
             if intent_key != self.last_spoken_intent:
                 return
