@@ -29,20 +29,67 @@ class ObjectDetectionNode:
 
         # Anti-Spam Tracking
         self.last_spoken_intent = ""
-        self.last_global_warning_time = (
-            0.0  # Prevents ping-ponging between different warnings
-        )
+        self.last_global_warning_time = 0.0  
 
         self.debug_mode = debug_mode
         self._last_debug_time = 0.0
+        
+        # --- Voice Activation State ---
+        self._is_active = False  # Starts OFF, waiting for "object detection on"
 
+        # Subscriptions
         shared_event_bus.subscribe("ultrasonic_data", self.on_ultrasonic_data)
-        print("[Navigation] Obstacle Guidance Node active (Anti-Spam Mode).")
+        shared_event_bus.subscribe("voice_command", self._on_voice_command) # Listen for voice
+        
+        print("[Navigation] Obstacle Guidance Node initialized. Awaiting voice activation.")
+
+    # --- Voice Command Handler ---
+    def _on_voice_command(self, data):
+        """
+        Listens to the event bus for specific keywords to toggle the model.
+        """
+        transcript = str(getattr(data, 'transcript', data)).lower().strip()
+        
+        if "object detection on" in transcript:
+            if not self._is_active:
+                self._is_active = True
+                print("[Navigation] Object Detection ENABLED via voice.")
+                self._announce_status("Object detection is now on.")
+                
+        elif "object detection of" in transcript or "object detection off" in transcript:
+            if self._is_active:
+                self._is_active = False
+                print("[Navigation] Object Detection DISABLED via voice.")
+                self._announce_status("Object detection is now off.")
+                # Clear history so old data doesn't trigger instantly when turned back on
+                self.history["left"].clear()
+                self.history["center"].clear()
+                self.history["right"].clear()
+
+    # --- Status Announcement ---
+    def _announce_status(self, message: str):
+        """
+        Uses the existing ModelEvent system to speak confirmation of the state change.
+        """
+        ev = ModelEvent(
+            source="obstacle_guidance_system",
+            type="system_status",
+            message=message,
+            priority=EventPriority.HIGH, # High priority so the user hears it immediately
+            dedupe_key=f"nav_sys_{message}",
+            cooldown_s=0.0
+        )
+        shared_event_bus.publish("speak_request", ev, run_async=True)
 
     def _is_valid(self, dist: float) -> bool:
         return 0.0 < dist < 400.0
 
     def on_ultrasonic_data(self, event: UltrasonicEvent):
+        # --- Gatekeeper Check ---
+        # If the model is turned off, ignore the data and do nothing
+        if not self._is_active:
+            return
+
         # 1. Buffer History
         self.history["left"].append(
             event.left_cm if self._is_valid(event.left_cm) else 999.0
@@ -125,8 +172,6 @@ class ObjectDetectionNode:
 
         # Global Anti-Spam: Prevent switching between different warnings too fast
         if not is_critical and (current_time - self.last_global_warning_time) < 6.0:
-            # We just gave a warning. Let the user process it before giving a DIFFERENT warning.
-            # (If it's the exact SAME warning, the SpeechRouter will handle the dedupe cooldown).
             if intent_key != self.last_spoken_intent:
                 return
 

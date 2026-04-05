@@ -75,7 +75,7 @@ class FaceModelNode:
         self._frame_count = 0
         self._process_every_n_frames = 3
 
-        # 4. Sensor Fusion State
+        # --- Ultrasonic State Cache ---
         self._latest_sonar = {"left": 999.0, "center": 999.0, "right": 999.0}
 
         # 5. Initial Sync from Cloudinary
@@ -136,7 +136,7 @@ class FaceModelNode:
         except Exception as e:
             print(f"❌ Cloudinary Sync Error: {e}")
 
-    # --- NEW: Catch Ultrasonic Updates ---
+    # --- Catch Ultrasonic Updates ---
     def on_ultrasonic_data(self, event: UltrasonicEvent):
         """Silently caches the latest physical distances to cross-reference with vision."""
 
@@ -224,6 +224,7 @@ class FaceModelNode:
         for yolo_id, tracker in list(self._trackers.items()):
             name = tracker.name
 
+            # 1. Tracker Expiration
             if not tracker.is_active:
                 if len(tracker.history) > 0 and (
                     current_time - tracker.history[-1][0] > 5.0
@@ -231,28 +232,33 @@ class FaceModelNode:
                     del self._trackers[yolo_id]
                 continue
 
+            # 2. Scanning Timeout
             if name == "Scanning..." and (current_time - tracker.first_seen_time > 2.0):
                 tracker.name = "Unknown person"
                 name = "Unknown person"
 
-            if name == "Scanning..." or len(tracker.history) < 8:
+            # --- THE FIX: ONLY ANNOUNCE FAMILIAR FACES ---
+            # If we don't know who they are, or we haven't seen them long enough, stay silent!
+            if name in ["Scanning...", "Unknown person"] or len(tracker.history) < 8:
                 continue
+
+            # (From here down, we are guaranteed that 'name' is a recognized friend)
 
             newest_cx = tracker.history[-1][2]
             direction, sonar_key = self._get_spatial_description(newest_cx, frame_width)
-            display_name = "Someone" if name == "Unknown person" else name
 
             message = ""
             priority = EventPriority.NORMAL
             cooldown = 15.0
 
+            # 3. Entrance Announcement
             if not tracker.has_announced_entrance:
                 tracker.has_announced_entrance = True
                 tracker.last_announced_state = "entered"
+                message = f"I see {name} {direction}."
+                cooldown = 30.0
 
-                if name != "Unknown person":
-                    message = f"I see {name} {direction}."
-                    cooldown = 30.0
+            # 4. Intent & Sensor Fusion
             else:
                 history_list = list(tracker.history)
                 old_h_avg = np.mean([h for _, h, _ in history_list[:3]])
@@ -260,47 +266,35 @@ class FaceModelNode:
                 height_diff = new_h_avg - old_h_avg
                 growth_threshold = max(30, old_h_avg * 0.15)
 
-                # --- SENSOR FUSION LOGIC ---
-                # Grab the physical distance for the specific zone the person is standing in
                 physical_dist_cm = self._latest_sonar[sonar_key]
-
                 current_state = "stationary"
 
-                # Fusion Rule 1: Absolute Proximity.
-                # If YOLO says they take up 70% of the screen OR the sonar says there is an object < 80cm away in that direction.
                 if new_h_avg > (frame_height * 0.70) or physical_dist_cm < 80.0:
                     current_state = "very_close"
-
-                # Fusion Rule 2: Approaching.
-                # If YOLO bounding box is growing rapidly.
                 elif height_diff > growth_threshold:
                     current_state = "approaching"
-
-                # Fusion Rule 3: Leaving.
                 elif height_diff < -growth_threshold:
                     current_state = "leaving"
-
-                # ----------------------------
 
                 time_since_last_event = current_time - tracker.last_event_time
                 state_changed = current_state != tracker.last_announced_state
 
                 if state_changed and time_since_last_event > 4.0:
                     if current_state == "very_close":
-                        message = f"{display_name} is right in front of you."
+                        message = f"{name} is right in front of you."
                         priority = EventPriority.HIGH
                         cooldown = 8.0
                     elif current_state == "approaching":
-                        message = f"{display_name} is approaching {direction}."
+                        message = f"{name} is approaching {direction}."
                         cooldown = 12.0
-                    elif name != "Unknown person":
-                        if current_state == "leaving":
-                            message = f"{name} is walking away."
-                            cooldown = 20.0
+                    elif current_state == "leaving":
+                        message = f"{name} is walking away."
+                        cooldown = 20.0
 
                 if message:
                     tracker.last_announced_state = current_state
 
+            # 5. Trigger Speech
             if message:
                 ev = ModelEvent(
                     source="vision_tracking",
